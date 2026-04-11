@@ -1,0 +1,8 @@
+{
+  "name": "caso-cerrado",
+  "version": "1.0.0",
+  "description": "Mystery investigation app",
+  "dependencies": {
+    "node-fetch": "^2.6.9"
+  }
+}
