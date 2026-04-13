@@ -1,39 +1,89 @@
+const https = require('https');
+
 exports.handler = async (event) => {
-  if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' };
+  if (event.httpMethod !== 'POST') {
+    return { statusCode: 405, body: 'Method Not Allowed' };
+  }
 
   const SB_URL = process.env.SUPABASE_URL;
   const SB_KEY = process.env.SUPABASE_KEY;
 
-  const { caseId } = JSON.parse(event.body || '{}');
-  if (!caseId) return { statusCode: 400, body: 'Missing caseId' };
+  if (!SB_URL || !SB_KEY) {
+    return { statusCode: 500, body: JSON.stringify({ error: 'Missing environment variables' }) };
+  }
 
-  const fetch = require('node-fetch');
-  const headers = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` };
+  let body;
+  try { body = JSON.parse(event.body || '{}'); }
+  catch { return { statusCode: 400, body: 'Invalid JSON body' }; }
 
-  const r = await fetch(`${SB_URL}/rest/v1/mystery_cases?id=eq.${caseId}`, { headers });
-  const cases = await r.json();
-  if (!cases || !cases.length) return { statusCode: 404, body: 'Case not found' };
+  const { caseId } = body;
+  if (!caseId) {
+    return { statusCode: 400, body: JSON.stringify({ error: 'Missing caseId' }) };
+  }
 
-  const cas = cases[0];
-  const data = cas.case_data;
-  const culprit = data.suspects.find(s => s.isGuilty);
+  try {
+    const cases = await sbRequest('GET', SB_URL, SB_KEY, `/rest/v1/mystery_cases?id=eq.${caseId}`);
+    if (!cases || !cases.length) {
+      return { statusCode: 404, body: JSON.stringify({ error: 'Case not found' }) };
+    }
 
-  const resolution = {
-    culprit: culprit ? culprit.name : 'Desconocido',
-    explanation: `${culprit?.name} cometió el crimen. ${data.culprit_motive} ${data.culprit_method}`,
-    vini_correct: cas.accusation_vini === culprit?.name,
-    lucy_correct: cas.accusation_lucy === culprit?.name
-  };
+    const cas     = cases[0];
+    const data    = cas.case_data;
+    const culprit = (data.suspects || []).find(s => s.isGuilty);
 
-  await fetch(`${SB_URL}/rest/v1/mystery_cases?id=eq.${caseId}`, {
-    method: 'PATCH',
-    headers: { ...headers, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-    body: JSON.stringify({ status: 'solved', resolution })
-  });
+    const resolution = {
+      culprit:      culprit ? culprit.name : 'Desconocido',
+      explanation:  `${culprit ? culprit.name : 'El culpable'} cometió el crimen. ${data.culprit_motive} ${data.culprit_method}`,
+      vini_correct: cas.accusation_vini === (culprit ? culprit.name : ''),
+      lucy_correct: cas.accusation_lucy === (culprit ? culprit.name : '')
+    };
 
-  return {
-    statusCode: 200,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ resolution })
-  };
+    await sbRequest('PATCH', SB_URL, SB_KEY, `/rest/v1/mystery_cases?id=eq.${caseId}`, {
+      status:     'solved',
+      resolution: resolution
+    }, 'return=minimal');
+
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      body: JSON.stringify({ resolution })
+    };
+  } catch (err) {
+    return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
+  }
 };
+
+function sbRequest(method, sbUrl, sbKey, path, body, prefer) {
+  return new Promise((resolve, reject) => {
+    const payload = body ? JSON.stringify(body) : null;
+    const urlObj  = new URL(sbUrl);
+    const headers = {
+      'apikey':        sbKey,
+      'Authorization': `Bearer ${sbKey}`,
+      'Content-Type':  'application/json'
+    };
+    if (prefer)  headers['Prefer'] = prefer;
+    if (payload) headers['Content-Length'] = Buffer.byteLength(payload);
+
+    const req = https.request({
+      hostname: urlObj.hostname,
+      path:     path,
+      method:   method,
+      headers:  headers
+    }, (res) => {
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { resolve(data ? JSON.parse(data) : true); }
+          catch { resolve(true); }
+        } else {
+          reject(new Error(`Supabase ${res.statusCode}: ${data.substring(0, 300)}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
