@@ -1,8 +1,8 @@
 {
-  "name": "caso-cerrado",
+  "name": "dedu",
   "version": "1.0.0",
-  "description": "Mystery investigation app",
-  "dependencies": {
-    "node-fetch": "^2.6.9"
+  "description": "Dedu - Mystery Investigation App",
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
